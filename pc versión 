@@ -1,0 +1,509 @@
+import pygame
+import random
+import math
+import sys
+
+pygame.init()
+
+W, H = 1000, 700
+screen = pygame.display.set_mode((W, H))
+pygame.display.set_caption("HOTLINE MIAMI: PC EDITION")
+clock = pygame.time.Clock()
+
+FONT = pygame.font.SysFont("consolas", 20, bold=True)
+BIG = pygame.font.SysFont("consolas", 48, bold=True)
+
+BG = (18, 14, 26)
+FLOOR = (34, 28, 43)
+GRID = (42, 34, 52)
+WALL = (100, 45, 100)
+PINK = (255, 35, 140)
+CYAN = (25, 225, 235)
+WHITE = (240, 235, 245)
+RED = (240, 45, 65)
+YELLOW = (255, 215, 55)
+
+player = pygame.Vector2(500, 350)
+SPEED = 240
+
+health = 3
+score = 0
+ammo = 12
+max_ammo = 12
+mask_index = 0
+weapon_index = 0
+
+masks = [
+    "GALLO", "TIGRE", "CABALLO", "CERDO",
+    "CONEJO", "LOBO", "BUHO", "ZORRO"
+]
+
+weapons = [
+    {"name": "PISTOLA", "ammo": 12, "cooldown": 0.24,
+     "speed": 600, "damage": 1, "spread": 0.02, "count": 1},
+    {"name": "ESCOPETA", "ammo": 5, "cooldown": 0.75,
+     "speed": 470, "damage": 1, "spread": 0.22, "count": 6},
+    {"name": "METRALLETA", "ammo": 30, "cooldown": 0.09,
+     "speed": 680, "damage": 1, "spread": 0.07, "count": 1}
+]
+
+ammo = weapons[weapon_index]["ammo"]
+max_ammo = ammo
+
+walls = [
+    pygame.Rect(0, 0, W, 25),
+    pygame.Rect(0, H - 25, W, 25),
+    pygame.Rect(0, 0, 25, H),
+    pygame.Rect(W - 25, 0, 25, H),
+    pygame.Rect(190, 90, 25, 230),
+    pygame.Rect(350, 25, 25, 170),
+    pygame.Rect(560, 150, 250, 25),
+    pygame.Rect(300, 430, 240, 25),
+    pygame.Rect(700, 340, 25, 200),
+    pygame.Rect(430, 260, 130, 25)
+]
+
+bullets = []
+enemy_bullets = []
+particles = []
+enemies = []
+
+shoot_timer = 0
+reload_timer = 0
+reloading = False
+invulnerable = 0
+game_over = False
+won = False
+paused = False
+
+
+def spawn_enemy():
+    while True:
+        p = pygame.Vector2(
+            random.randint(60, W - 60),
+            random.randint(60, H - 60)
+        )
+
+        if p.distance_to(player) < 180:
+            continue
+
+        rect = pygame.Rect(int(p.x - 12), int(p.y - 12), 24, 24)
+
+        if any(rect.colliderect(w) for w in walls):
+            continue
+
+        return {
+            "pos": p,
+            "speed": random.randint(65, 105),
+            "alive": True,
+            "cooldown": random.uniform(0.7, 2.0),
+            "health": 1
+        }
+
+
+def create_particles(pos, color, amount=8):
+    for _ in range(amount):
+        angle = random.uniform(0, math.tau)
+        speed = random.uniform(35, 180)
+
+        particles.append({
+            "pos": pygame.Vector2(pos),
+            "vel": pygame.Vector2(
+                math.cos(angle) * speed,
+                math.sin(angle) * speed
+            ),
+            "life": random.uniform(0.15, 0.45),
+            "color": color
+        })
+
+
+def move_entity(pos, dx, dy, radius=12):
+    pos.x += dx
+    rect = pygame.Rect(
+        int(pos.x - radius), int(pos.y - radius),
+        radius * 2, radius * 2
+    )
+
+    for wall in walls:
+        if rect.colliderect(wall):
+            if dx > 0:
+                pos.x = wall.left - radius
+            elif dx < 0:
+                pos.x = wall.right + radius
+
+    pos.y += dy
+    rect = pygame.Rect(
+        int(pos.x - radius), int(pos.y - radius),
+        radius * 2, radius * 2
+    )
+
+    for wall in walls:
+        if rect.colliderect(wall):
+            if dy > 0:
+                pos.y = wall.top - radius
+            elif dy < 0:
+                pos.y = wall.bottom + radius
+
+
+def shoot():
+    global ammo, shoot_timer
+
+    if ammo <= 0 or shoot_timer > 0 or reloading:
+        return
+
+    weapon = weapons[weapon_index]
+    target = pygame.Vector2(pygame.mouse.get_pos())
+    direction = target - player
+
+    if direction.length_squared() == 0:
+        return
+
+    direction = direction.normalize()
+
+    for _ in range(weapon["count"]):
+        angle = math.atan2(direction.y, direction.x)
+        angle += random.uniform(-weapon["spread"], weapon["spread"])
+
+        velocity = pygame.Vector2(
+            math.cos(angle), math.sin(angle)
+        ) * weapon["speed"]
+
+        bullets.append({
+            "pos": player.copy(),
+            "vel": velocity,
+            "life": 1.3,
+            "damage": weapon["damage"]
+        })
+
+    ammo -= 1
+    shoot_timer = weapon["cooldown"]
+
+    create_particles(player, YELLOW, 3)
+
+
+def reload():
+    global reloading, reload_timer
+
+    if not reloading and ammo < max_ammo:
+        reloading = True
+        reload_timer = 1.0 if weapon_index != 1 else 1.4
+
+
+def switch_weapon(index):
+    global weapon_index, ammo, max_ammo, reloading
+
+    weapon_index = index
+    ammo = weapons[index]["ammo"]
+    max_ammo = ammo
+    reloading = False
+
+
+def draw_text(text, x, y, color=WHITE, font=FONT):
+    img = font.render(str(text), True, color)
+    screen.blit(img, (x, y))
+
+
+def draw_player():
+    mouse = pygame.Vector2(pygame.mouse.get_pos())
+    direction = mouse - player
+
+    if direction.length_squared() > 0:
+        end = player + direction.normalize() * 28
+        pygame.draw.line(screen, CYAN, player, end, 5)
+
+    pygame.draw.circle(screen, PINK, player, 15)
+    pygame.draw.circle(screen, WHITE, player, 15, 2)
+
+
+def reset_game():
+    global player, health, score, ammo, max_ammo
+    global bullets, enemy_bullets, particles, enemies
+    global shoot_timer, reload_timer, reloading
+    global invulnerable, game_over, won, paused
+
+    player = pygame.Vector2(500, 350)
+    health = 3
+    score = 0
+
+    switch_weapon(0)
+
+    bullets = []
+    enemy_bullets = []
+    particles = []
+    enemies = [spawn_enemy() for _ in range(12)]
+
+    shoot_timer = 0
+    reload_timer = 0
+    reloading = False
+    invulnerable = 0
+    game_over = False
+    won = False
+    paused = False
+
+
+enemies = [spawn_enemy() for _ in range(12)]
+
+running = True
+
+while running:
+    dt = min(clock.tick(60) / 1000, 0.04)
+
+    shoot_timer = max(0, shoot_timer - dt)
+    invulnerable = max(0, invulnerable - dt)
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
+
+            if event.key == pygame.K_p and not game_over and not won:
+                paused = not paused
+
+            if event.key == pygame.K_SPACE and (game_over or won):
+                reset_game()
+
+            if event.key == pygame.K_r and not game_over and not won:
+                reload()
+
+            if event.key == pygame.K_q:
+                mask_index = (mask_index + 1) % len(masks)
+
+            if event.key == pygame.K_1:
+                switch_weapon(0)
+
+            if event.key == pygame.K_2:
+                switch_weapon(1)
+
+            if event.key == pygame.K_3:
+                switch_weapon(2)
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:
+                if game_over or won:
+                    reset_game()
+
+    keys = pygame.key.get_pressed()
+    mouse_buttons = pygame.mouse.get_pressed()
+
+    if not game_over and not won and not paused:
+
+        if reloading:
+            reload_timer -= dt
+            if reload_timer <= 0:
+                ammo = max_ammo
+                reloading = False
+
+        move = pygame.Vector2(0, 0)
+
+        if keys[pygame.K_w] or keys[pygame.K_UP]:
+            move.y -= 1
+        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+            move.y += 1
+        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+            move.x -= 1
+        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+            move.x += 1
+
+        if move.length_squared() > 0:
+            move = move.normalize()
+            move_entity(
+                player,
+                move.x * SPEED * dt,
+                move.y * SPEED * dt
+            )
+
+        if mouse_buttons[0]:
+            shoot()
+
+        for bullet in bullets[:]:
+            bullet["pos"] += bullet["vel"] * dt
+            bullet["life"] -= dt
+
+            if bullet["life"] <= 0:
+                bullets.remove(bullet)
+                continue
+
+            if any(
+                wall.collidepoint(bullet["pos"].x, bullet["pos"].y)
+                for wall in walls
+            ):
+                create_particles(bullet["pos"], YELLOW, 2)
+                bullets.remove(bullet)
+                continue
+
+            for enemy in enemies:
+                if enemy["alive"] and bullet["pos"].distance_to(
+                    enemy["pos"]
+                ) < 17:
+                    enemy["health"] -= bullet["damage"]
+
+                    if enemy["health"] <= 0:
+                        enemy["alive"] = False
+                        score += 100
+                        create_particles(enemy["pos"], RED, 12)
+
+                    if bullet in bullets:
+                        bullets.remove(bullet)
+                    break
+
+        for enemy in enemies:
+            if not enemy["alive"]:
+                continue
+
+            direction = player - enemy["pos"]
+            distance = direction.length()
+
+            if distance > 22:
+                direction = direction.normalize()
+                move_entity(
+                    enemy["pos"],
+                    direction.x * enemy["speed"] * dt,
+                    direction.y * enemy["speed"] * dt,
+                    12
+                )
+
+            enemy["cooldown"] -= dt
+
+            if distance < 380 and enemy["cooldown"] <= 0:
+                if distance > 0:
+                    direction = (player - enemy["pos"]).normalize()
+
+                    enemy_bullets.append({
+                        "pos": enemy["pos"].copy(),
+                        "vel": direction * 290,
+                        "life": 2
+                    })
+
+                enemy["cooldown"] = random.uniform(1.2, 2.1)
+
+            if distance < 24 and invulnerable <= 0:
+                health -= 1
+                invulnerable = 1.1
+                create_particles(player, RED, 10)
+
+        for bullet in enemy_bullets[:]:
+            bullet["pos"] += bullet["vel"] * dt
+            bullet["life"] -= dt
+
+            if bullet["life"] <= 0:
+                enemy_bullets.remove(bullet)
+                continue
+
+            if any(
+                wall.collidepoint(bullet["pos"].x, bullet["pos"].y)
+                for wall in walls
+            ):
+                enemy_bullets.remove(bullet)
+                continue
+
+            if bullet["pos"].distance_to(player) < 15:
+                if invulnerable <= 0:
+                    health -= 1
+                    invulnerable = 1.1
+                    create_particles(player, RED, 10)
+
+                enemy_bullets.remove(bullet)
+
+        for particle in particles[:]:
+            particle["pos"] += particle["vel"] * dt
+            particle["life"] -= dt
+
+            if particle["life"] <= 0:
+                particles.remove(particle)
+
+        if health <= 0:
+            game_over = True
+
+        if all(not enemy["alive"] for enemy in enemies):
+            won = True
+
+    screen.fill(BG)
+
+    pygame.draw.rect(screen, FLOOR, (25, 25, W - 50, H - 50))
+
+    for x in range(25, W, 40):
+        pygame.draw.line(screen, GRID, (x, 25), (x, H - 25))
+
+    for y in range(25, H, 40):
+        pygame.draw.line(screen, GRID, (25, y), (W - 25, y))
+
+    for wall in walls:
+        pygame.draw.rect(screen, WALL, wall)
+        pygame.draw.rect(screen, PINK, wall, 2)
+
+    for particle in particles:
+        radius = max(1, int(4 * particle["life"] / 0.45))
+        pygame.draw.circle(
+            screen, particle["color"], particle["pos"], radius
+        )
+
+    for bullet in bullets:
+        pygame.draw.circle(screen, YELLOW, bullet["pos"], 4)
+
+    for bullet in enemy_bullets:
+        pygame.draw.circle(screen, RED, bullet["pos"], 5)
+
+    for enemy in enemies:
+        if enemy["alive"]:
+            pygame.draw.circle(screen, RED, enemy["pos"], 13)
+            pygame.draw.circle(screen, WHITE, enemy["pos"], 13, 2)
+
+    if invulnerable <= 0 or int(invulnerable * 12) % 2 == 0:
+        draw_player()
+
+    pygame.draw.rect(screen, (12, 10, 18), (0, 0, W, 28))
+    draw_text("HOTLINE MIAMI", 12, 4, PINK)
+    draw_text(f"SCORE: {score}", 240, 4)
+    draw_text(f"VIDAS: {max(0, health)}", 390, 4, RED)
+    draw_text(f"BALAS: {ammo}/{max_ammo}", 540, 4, YELLOW)
+    draw_text(f"MASCARA: {masks[mask_index]}", 730, 4, CYAN)
+
+    draw_text(
+        "WASD: MOVER | RATON: APUNTAR/DISPARAR | R: RECARGAR",
+        25, H - 22, WHITE
+    )
+
+    if reloading:
+        draw_text("RECARGANDO...", W // 2 - 85, 35, YELLOW)
+
+    if paused and not game_over and not won:
+        overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 190))
+        screen.blit(overlay, (0, 0))
+
+        text = BIG.render("PAUSA", True, CYAN)
+        screen.blit(text, text.get_rect(center=(W // 2, H // 2)))
+
+        draw_text(
+            "P PARA CONTINUAR",
+            W // 2 - 115, H // 2 + 55, WHITE
+        )
+
+    if game_over or won:
+        overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 210))
+        screen.blit(overlay, (0, 0))
+
+        title = "MISIÓN COMPLETADA" if won else "HAS MUERTO"
+        color = CYAN if won else RED
+
+        img = BIG.render(title, True, color)
+        screen.blit(img, img.get_rect(center=(W // 2, H // 2 - 45)))
+
+        draw_text(
+            f"PUNTUACION FINAL: {score}",
+            W // 2 - 130, H // 2 + 10, WHITE
+        )
+
+        draw_text(
+            "PULSA ESPACIO O HAZ CLIC PARA REINICIAR",
+            W // 2 - 245, H // 2 + 55, YELLOW
+        )
+
+    pygame.display.flip()
+
+pygame.quit()
+sys.exit()
